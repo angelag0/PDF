@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+uploads/
+test_sample.pdf
+.DS_Store
