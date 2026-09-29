@@ -1073,19 +1073,15 @@ input[type="file"] {
     padding: 8px 14px;
     background: #2e2e2c;
     color: #fff;
-    border-left: 3px solid #9a9a93;
     border-radius: var(--radius);
     box-shadow: var(--shadow-pop);
     line-height: 1.5;
     animation: slideIn 0.15s ease-out;
 }
 
-.toast.success {
-    border-left-color: #6cbf6c;
-}
-
+/* 錯誤用深紅底區分；成功與一般訊息同一種樣子 */
 .toast.error {
-    border-left-color: #ef6b5e;
+    background: #8e2b22;
 }
 
 /* 名稱 slideIn／slideOut 由 app.js 的 showToast 使用 */
