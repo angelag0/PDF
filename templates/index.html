@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="功能強大的本機 PDF 編輯器 — 支援文字編輯、圖片嵌入、裁切、合併與多格式匯出">
+    <meta name="description" content="在自己電腦上編輯 PDF：打字、改字、圖片、裁切、合併與匯出">
     <title>PDF 編輯器</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <!-- Fabric.js -->
@@ -14,57 +14,44 @@
 <div id="app">
     <!-- ===== Toolbar ===== -->
     <div id="toolbar">
-        <!-- Logo -->
-        <div class="toolbar-group" style="padding-right:12px">
-            <span style="font-size:20px; font-weight:700; background:linear-gradient(135deg,#6366f1,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">
-                📄 PDF Editor
-            </span>
+        <div class="toolbar-group">
+            <span class="app-name">PDF 編輯器</span>
+            <button class="tool-btn" id="btn-open" title="開啟另一個 PDF 檔案">開啟</button>
         </div>
 
         <!-- Mode Tabs -->
         <div class="toolbar-group">
             <div class="mode-tabs">
-                <button class="mode-tab active" data-mode="edit" id="mode-edit-btn">✏️ 編輯</button>
-                <button class="mode-tab" data-mode="merge" id="mode-merge-btn">📑 合併</button>
-                <button class="mode-tab" data-mode="crop" id="mode-crop-btn">✂️ 裁切</button>
+                <button class="mode-tab active" data-mode="edit" id="mode-edit-btn">編輯</button>
+                <button class="mode-tab" data-mode="merge" id="mode-merge-btn">合併</button>
+                <button class="mode-tab" data-mode="crop" id="mode-crop-btn">裁切</button>
             </div>
         </div>
 
         <!-- Edit Tools -->
         <div class="toolbar-group" id="edit-tools">
-            <span class="toolbar-group-label">工具</span>
-            <button class="tool-btn active" id="tool-select" data-tool="select" title="選取文字">
-                🔤
-            </button>
-            <button class="tool-btn" id="tool-text" data-tool="text" title="輸入文字">
-                📝
-            </button>
-            <button class="tool-btn" id="tool-image" data-tool="image" title="插入圖片">
-                🖼️
-            </button>
+            <button class="tool-btn active" id="tool-select" data-tool="select" title="選取頁面上的文字來修改、複製或刪除">選取</button>
+            <button class="tool-btn" id="tool-text" data-tool="text" title="在頁面上點一下就能打字">打字</button>
+            <button class="tool-btn" id="tool-image" data-tool="image" title="插入圖片（也可直接 Ctrl+V 貼上截圖）">圖片</button>
         </div>
 
         <!-- Actions -->
         <div class="toolbar-group" id="action-tools">
-            <span class="toolbar-group-label">操作</span>
-            <button class="tool-btn" id="btn-undo" title="復原 (Ctrl+Z)">↩️</button>
-            <button class="tool-btn" id="btn-redo" title="重做 (Ctrl+Y)">↪️</button>
-            <button class="tool-btn" id="btn-delete-page" title="刪除當前頁">🗑️</button>
+            <button class="tool-btn" id="btn-undo" title="上一步 (Ctrl+Z)">上一步</button>
+            <button class="tool-btn" id="btn-redo" title="下一步 (Ctrl+Y)">下一步</button>
+            <button class="tool-btn" id="btn-delete-page" title="刪除目前這一頁">刪除此頁</button>
         </div>
 
-        <!-- Spacer -->
-        <div style="flex:1"></div>
+        <div class="toolbar-spacer"></div>
 
         <!-- Export -->
         <div class="toolbar-group">
             <div class="dropdown-wrapper">
-                <button class="btn btn-primary" id="btn-export">
-                    💾 匯出 ▾
-                </button>
+                <button class="btn btn-primary" id="btn-export">匯出 <span class="caret">▾</span></button>
                 <div class="dropdown-menu" id="export-dropdown">
-                    <button class="dropdown-item" id="export-pdf">📄 匯出 PDF</button>
-                    <button class="dropdown-item" id="export-jpg">🖼️ 匯出 JPG</button>
-                    <button class="dropdown-item" id="export-docx">📝 匯出 Word</button>
+                    <button class="dropdown-item" id="export-pdf">PDF</button>
+                    <button class="dropdown-item" id="export-jpg">JPG 圖片（ZIP）</button>
+                    <button class="dropdown-item" id="export-docx">Word</button>
                 </div>
             </div>
         </div>
@@ -75,8 +62,8 @@
         <!-- Sidebar: Thumbnails -->
         <div id="sidebar">
             <div class="sidebar-header">
-                <span>📄 頁面</span>
-                <button class="tool-btn" id="toggle-sidebar" style="width:24px;height:24px;font-size:12px;">◀</button>
+                <span>頁面</span>
+                <button class="icon-btn" id="toggle-sidebar" title="收合／展開頁面清單">◀</button>
             </div>
             <div id="thumbnail-list"></div>
         </div>
@@ -85,17 +72,11 @@
         <div id="canvas-area">
             <!-- Upload Screen -->
             <div id="upload-screen">
-                <div class="upload-hero">
-                    <h1>PDF 編輯器</h1>
-                    <p>拖放 PDF 檔案或點擊下方上傳</p>
-                </div>
                 <div class="upload-zone" id="upload-zone">
-                    <span class="upload-icon">📂</span>
-                    <p class="upload-text">拖放 PDF 至此處</p>
-                    <p class="upload-hint">或點擊選擇檔案 · 支援最大 200MB</p>
-                    <button class="upload-btn" id="upload-btn">
-                        📤 選擇 PDF 檔案
-                    </button>
+                    <h1 class="upload-title">開啟 PDF 檔案</h1>
+                    <p class="upload-text">把檔案拖到這裡，或</p>
+                    <button class="btn btn-primary upload-btn" id="upload-btn">選擇檔案</button>
+                    <p class="upload-hint">檔案只在這台電腦上處理，不會上傳到網路。</p>
                 </div>
                 <input type="file" id="file-input" accept=".pdf">
             </div>
@@ -103,7 +84,7 @@
             <!-- PDF Viewer -->
             <div id="canvas-container" class="hidden">
                 <div id="pdf-canvas-wrapper">
-                    <img id="pdf-page-img" alt="PDF Page">
+                    <img id="pdf-page-img" alt="PDF 頁面">
                     <!-- Text overlay for selection -->
                     <div id="text-overlay"></div>
                     <!-- Selection rectangle -->
@@ -120,19 +101,19 @@
             <!-- Merge Panel (overlay) -->
             <div id="merge-panel">
                 <div class="merge-header">
-                    <h2>📑 PDF 合併</h2>
-                    <div style="display:flex; gap:8px;">
-                        <button class="btn btn-secondary" id="merge-add-files">📤 新增檔案</button>
-                        <button class="btn btn-primary" id="merge-execute">🔗 開始合併</button>
-                        <button class="btn btn-secondary" id="merge-close">✕ 關閉</button>
+                    <h2>合併 PDF</h2>
+                    <div class="merge-actions">
+                        <button class="btn btn-secondary" id="merge-add-current">加入目前編輯的檔案</button>
+                        <button class="btn btn-secondary" id="merge-add-files">新增檔案</button>
+                        <button class="btn btn-primary" id="merge-execute">開始合併</button>
+                        <button class="btn btn-secondary" id="merge-close">關閉</button>
                     </div>
                 </div>
                 <div class="merge-content">
                     <div class="merge-file-list" id="merge-file-list">
                         <div class="merge-upload-zone" id="merge-upload-zone">
-                            <span style="font-size:36px; margin-bottom:8px;">📑</span>
-                            <p style="color:var(--text-secondary);">拖放多個 PDF 檔案至此</p>
-                            <p style="color:var(--text-tertiary); font-size:12px; margin-top:4px;">拖拽排序以決定合併順序</p>
+                            <p>把要合併的 PDF 拖到這裡，或點一下選擇檔案</p>
+                            <p class="merge-upload-hint">加入後可以上下拖曳調整合併順序</p>
                         </div>
                     </div>
                 </div>
@@ -144,87 +125,92 @@
         <div id="properties-panel">
             <!-- Text Properties -->
             <div class="panel-section" id="text-properties" style="display:none;">
-                <div class="panel-section-title">文字屬性</div>
+                <div class="panel-section-title">打字</div>
+                <p class="panel-hint">
+                    在頁面上點一下就會出現輸入框，框在哪裡、字就印在哪裡。
+                    點頁面其他地方會自動放入並開始下一段；拖曳框左邊的把手可以移動位置。
+                </p>
+                <p class="panel-hint">Ctrl+Enter 完成，Esc 取消。</p>
                 <div class="panel-row">
-                    <label>大小</label>
+                    <label for="font-size-input">大小</label>
                     <input type="number" class="panel-input" id="font-size-input" value="14" min="6" max="200" step="1">
-                    <span style="font-size:12px; color:var(--text-tertiary);">pt</span>
+                    <span class="panel-unit">pt</span>
                 </div>
                 <div class="panel-row">
-                    <label>顏色</label>
-                    <input type="color" class="panel-input" id="font-color-input" value="#000000">
-                    <input type="text" class="panel-input" id="font-color-hex" value="#000000" style="width:80px;">
+                    <label for="font-color-input">顏色</label>
+                    <input type="color" class="panel-input panel-color" id="font-color-input" value="#000000">
+                    <input type="text" class="panel-input panel-hex" id="font-color-hex" value="#000000">
                 </div>
-                <div class="panel-row" style="margin-top:8px;">
-                    <button class="btn btn-primary" id="btn-confirm-text" style="width:100%;">✓ 確認加入文字</button>
-                </div>
+                <button class="btn btn-primary btn-block" id="btn-confirm-text">完成這段文字</button>
             </div>
 
             <!-- Image Properties -->
             <div class="panel-section" id="image-properties" style="display:none;">
-                <div class="panel-section-title">圖片屬性</div>
+                <div class="panel-section-title">圖片</div>
+                <p class="panel-hint">
+                    圖片放上來後還沒進 PDF：拖曳移動、拉四角縮放、拉上方的點旋轉，好了再按「確認合併進 PDF」。
+                    Ctrl+V 可直接貼上截圖；選中圖片按 Delete 可拿掉。
+                </p>
                 <div class="panel-row">
-                    <label>寬度</label>
-                    <input type="number" class="panel-input" id="img-width-input" min="10">
+                    <label for="img-width-input">寬度</label>
+                    <input type="number" class="panel-input" id="img-width-input" min="1">
+                    <span class="panel-unit">pt</span>
                 </div>
                 <div class="panel-row">
-                    <label>高度</label>
-                    <input type="number" class="panel-input" id="img-height-input" min="10">
+                    <label for="img-height-input">高度</label>
+                    <input type="number" class="panel-input" id="img-height-input" min="1">
+                    <span class="panel-unit">pt</span>
                 </div>
                 <div class="panel-row">
-                    <label>X</label>
+                    <label for="img-x-input">距左</label>
                     <input type="number" class="panel-input" id="img-x-input">
+                    <span class="panel-unit">pt</span>
                 </div>
                 <div class="panel-row">
-                    <label>Y</label>
+                    <label for="img-y-input">距頂</label>
                     <input type="number" class="panel-input" id="img-y-input">
+                    <span class="panel-unit">pt</span>
                 </div>
-                <div class="panel-row" style="margin-top:8px;">
-                    <button class="btn btn-primary" id="btn-confirm-image" style="width:100%;">✓ 確認合併進 PDF</button>
-                </div>
+                <button class="btn btn-secondary btn-block" id="btn-add-image">再加一張圖片</button>
+                <button class="btn btn-primary btn-block" id="btn-confirm-image">確認合併進 PDF</button>
             </div>
 
             <!-- Selection Info -->
             <div class="panel-section" id="selection-info" style="display:none;">
-                <div class="panel-section-title">選取與編輯文字</div>
-                <textarea id="selected-text-preview" rows="5" style="
-                    width: 100%;
-                    background: var(--bg-tertiary);
-                    border: 1px solid var(--border-primary);
-                    border-radius: var(--radius-sm);
-                    padding: 10px;
-                    font-size: 13px;
-                    line-height: 1.5;
-                    color: var(--text-primary);
-                    word-break: break-all;
-                    resize: vertical;
-                    font-family: inherit;
-                    outline: none;
-                "></textarea>
-                <div style="display:flex; gap:6px; margin-top:10px;">
-                    <button class="btn btn-primary" id="btn-edit-text" style="flex:1.2;">✏️ 修改文字</button>
-                    <button class="btn btn-secondary" id="btn-copy-text" style="flex:1;">📋 複製</button>
-                    <button class="btn btn-danger" id="btn-delete-text" style="flex:1;">🗑️ 刪除</button>
+                <div class="panel-section-title">選取的文字</div>
+                <p class="panel-hint">
+                    直接在框內改字，再按「修改文字」。改過的字會用思源黑體重寫，位置、大小、顏色沿用原本的。
+                </p>
+                <p class="panel-hint panel-hint-warn" id="selection-garbled-hint" style="display:none;">
+                    這段字在 PDF 內部的編碼特殊，抓出來是亂碼。要修改請把整段重新打一次。
+                </p>
+                <textarea id="selected-text-preview" class="panel-textarea" rows="5"></textarea>
+                <div class="panel-actions">
+                    <button class="btn btn-primary" id="btn-edit-text">修改文字</button>
+                    <button class="btn btn-secondary" id="btn-copy-text">複製</button>
+                    <button class="btn btn-danger" id="btn-delete-text">刪除</button>
                 </div>
             </div>
 
             <!-- Crop Controls -->
             <div class="panel-section" id="crop-controls" style="display:none;">
-                <div class="panel-section-title">裁切控制</div>
-                <button class="btn btn-secondary" id="btn-add-cut-line" style="width:100%; margin-bottom:8px;">➕ 新增切割線</button>
-                <div id="cut-lines-list" style="display:flex; flex-direction:column; gap:4px; margin-bottom:10px;"></div>
-                <button class="btn btn-primary" id="btn-preview-crop" style="width:100%; margin-bottom:8px;">👁️ 預覽切片</button>
-                <button class="btn btn-success" id="btn-apply-crop" style="width:100%;">✓ 套用裁切</button>
+                <div class="panel-section-title">裁切目前這一頁</div>
+                <p class="panel-hint">
+                    用紅色切割線把這一頁橫向切成幾段，每段會變成獨立的一頁；標成「移除」的段落會被丟掉。
+                </p>
+                <button class="btn btn-secondary btn-block" id="btn-add-cut-line">新增切割線</button>
+                <div id="cut-lines-list"></div>
+                <button class="btn btn-primary btn-block" id="btn-apply-crop">套用裁切</button>
             </div>
 
             <!-- Page Info -->
             <div class="panel-section" id="page-info-section">
                 <div class="panel-section-title">頁面資訊</div>
-                <div style="font-size:12px; color:var(--text-secondary); line-height:1.8;">
-                    <div>文件: <span id="info-filename">—</span></div>
-                    <div>頁碼: <span id="info-page">—</span></div>
-                    <div>尺寸: <span id="info-size">—</span></div>
-                </div>
+                <dl class="info-list">
+                    <dt>文件</dt><dd id="info-filename">—</dd>
+                    <dt>頁碼</dt><dd id="info-page">—</dd>
+                    <dt>尺寸</dt><dd id="info-size">—</dd>
+                </dl>
             </div>
         </div>
     </div>
@@ -236,13 +222,13 @@
         </div>
         <div class="status-separator"></div>
         <div class="status-item" id="status-tool">
-            <span>選取工具</span>
+            <span></span>
         </div>
         <div id="zoom-controls">
             <button id="zoom-out" title="縮小">−</button>
             <span id="zoom-value">100%</span>
             <button id="zoom-in" title="放大">+</button>
-            <button id="zoom-fit" title="適合寬度">⊡</button>
+            <button id="zoom-fit" class="zoom-fit" title="縮放到符合視窗寬度">符合寬度</button>
         </div>
     </div>
 </div>
@@ -258,12 +244,44 @@
     </div>
 </div>
 
+<!-- Password Dialog -->
+<div class="modal-overlay" id="password-modal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>這份 PDF 有密碼保護</h3>
+        </div>
+        <div class="modal-body">
+            <p class="modal-text">「<span id="password-modal-file"></span>」需要密碼才能開啟。</p>
+            <p class="panel-hint">銀行對帳單、電子存摺常用身分證字號或生日當密碼（英文字母注意大小寫）。</p>
+            <input type="password" class="panel-input password-input" id="password-input" autocomplete="off" placeholder="輸入開啟密碼">
+            <p class="panel-hint panel-hint-warn" id="password-modal-error" style="display:none;">密碼不對，請再試一次。</p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" id="password-cancel">取消</button>
+            <button class="btn btn-primary" id="password-ok">開啟</button>
+        </div>
+    </div>
+</div>
+
+<!-- Choice Dialog -->
+<div class="modal-overlay" id="choice-modal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 id="choice-modal-title"></h3>
+        </div>
+        <div class="modal-body">
+            <p class="modal-text" id="choice-modal-text"></p>
+        </div>
+        <div class="modal-footer" id="choice-modal-buttons"></div>
+    </div>
+</div>
+
 <!-- Context Menu -->
 <div id="context-menu">
-    <button class="ctx-menu-item" id="ctx-copy">📋 複製文字<span class="shortcut">Ctrl+C</span></button>
-    <button class="ctx-menu-item" id="ctx-delete">🗑️ 刪除文字<span class="shortcut">Del</span></button>
+    <button class="ctx-menu-item" id="ctx-copy">複製文字<span class="shortcut">Ctrl+C</span></button>
+    <button class="ctx-menu-item" id="ctx-delete">刪除文字<span class="shortcut">Del</span></button>
     <div class="ctx-menu-divider"></div>
-    <button class="ctx-menu-item" id="ctx-select-all">🔲 全選<span class="shortcut">Ctrl+A</span></button>
+    <button class="ctx-menu-item" id="ctx-select-all">全選<span class="shortcut">Ctrl+A</span></button>
 </div>
 
 <!-- Hidden file input for image upload -->

@@ -21,6 +21,11 @@ class MergeEditor {
             this.mergeFileInput.click();
         });
 
+        // 把目前正在編輯的檔案（含已做的修改）加進合併清單
+        document.getElementById('merge-add-current').addEventListener('click', () => {
+            this.addCurrentDoc();
+        });
+
         this.mergeFileInput.addEventListener('change', (e) => {
             this._handleFiles(e.target.files);
             e.target.value = '';
@@ -33,17 +38,26 @@ class MergeEditor {
 
         this.mergeUploadZone.addEventListener('dragover', (e) => {
             e.preventDefault();
-            this.mergeUploadZone.style.borderColor = 'var(--accent-primary)';
+            this.mergeUploadZone.classList.add('drag-over');
         });
 
         this.mergeUploadZone.addEventListener('dragleave', () => {
-            this.mergeUploadZone.style.borderColor = '';
+            this.mergeUploadZone.classList.remove('drag-over');
         });
 
         this.mergeUploadZone.addEventListener('drop', (e) => {
             e.preventDefault();
-            this.mergeUploadZone.style.borderColor = '';
+            e.stopPropagation();
+            this.mergeUploadZone.classList.remove('drag-over');
             this._handleFiles(e.dataTransfer.files);
+        });
+
+        // 整個合併面板都可以接受拖放檔案
+        this.mergePanel.addEventListener('dragover', (e) => e.preventDefault());
+        this.mergePanel.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer.files.length > 0) this._handleFiles(e.dataTransfer.files);
         });
 
         // 執行合併
@@ -51,9 +65,9 @@ class MergeEditor {
             this.executeMerge();
         });
 
-        // 關閉
+        // 關閉：回到編輯模式（上方分頁也一起切回）
         document.getElementById('merge-close').addEventListener('click', () => {
-            this.hide();
+            switchMode('edit');
         });
     }
 
@@ -62,6 +76,27 @@ class MergeEditor {
      */
     show() {
         this.mergePanel.classList.add('visible');
+        const viewer = window.pdfViewer;
+        const btn = document.getElementById('merge-add-current');
+        btn.style.display = viewer.docId && !this.usesDoc(viewer.docId) ? '' : 'none';
+    }
+
+    usesDoc(docId) {
+        return this.files.some(f => f.docId === docId);
+    }
+
+    addCurrentDoc() {
+        const viewer = window.pdfViewer;
+        if (!viewer.docId || this.usesDoc(viewer.docId)) return;
+        this.files.unshift({
+            id: this.nextId++,
+            file: null,
+            filename: `${viewer.filename}（目前編輯中）`,
+            pageCount: viewer.pageCount,
+            docId: viewer.docId,
+        });
+        this._renderFileList();
+        document.getElementById('merge-add-current').style.display = 'none';
     }
 
     /**
@@ -86,16 +121,12 @@ class MergeEditor {
             // 先上傳到後端取得資訊
             showLoading(`載入 ${file.name}...`);
             try {
-                const formData = new FormData();
-                formData.append('file', file);
-                const resp = await fetch('/api/upload', { method: 'POST', body: formData });
-                const data = await resp.json();
-                if (data.error) throw new Error(data.error);
+                const data = await uploadPDF(file);
 
                 this.files.push({
                     id,
                     file,
-                    filename: file.name,
+                    filename: file.name + (data.locked ? '（有密碼）' : ''),
                     pageCount: data.page_count,
                     docId: data.doc_id,
                 });
@@ -103,7 +134,8 @@ class MergeEditor {
                 hideLoading();
             } catch (e) {
                 hideLoading();
-                showToast(`載入 ${file.name} 失敗: ${e.message}`, 'error');
+                if (e.cancelled) showToast(e.message, 'info');
+                else showToast(`載入「${file.name}」失敗：${e.message}`, 'error');
             }
         }
 
@@ -124,12 +156,12 @@ class MergeEditor {
             el.dataset.index = index;
 
             el.innerHTML = `
-                <span class="drag-handle">⠿</span>
-                <span style="font-size:24px;">📄</span>
-                <span class="file-name">${item.filename}</span>
+                <span class="drag-handle" title="按住拖曳調整順序">⠿</span>
+                <span class="file-name"></span>
                 <span class="page-count">${item.pageCount} 頁</span>
-                <button class="remove-btn" data-id="${item.id}">✕</button>
+                <button class="remove-btn" title="從清單移除">×</button>
             `;
+            el.querySelector('.file-name').textContent = item.filename;
 
             // 移除按鈕
             el.querySelector('.remove-btn').addEventListener('click', (e) => {
@@ -146,6 +178,7 @@ class MergeEditor {
 
             el.addEventListener('dragend', () => {
                 el.classList.remove('dragging');
+                this._updateOrder();
             });
 
             el.addEventListener('dragover', (e) => {
@@ -165,8 +198,7 @@ class MergeEditor {
 
             el.addEventListener('drop', (e) => {
                 e.preventDefault();
-                // 更新順序
-                this._updateOrder();
+                e.stopPropagation();
             });
 
             this.fileList.appendChild(el);
@@ -196,6 +228,7 @@ class MergeEditor {
     _removeFile(id) {
         this.files = this.files.filter(f => f.id !== id);
         this._renderFileList();
+        this.show();
     }
 
     /**
@@ -223,7 +256,7 @@ class MergeEditor {
             });
 
             if (!resp.ok) {
-                const errData = await resp.json();
+                const errData = await readJSON(resp);
                 throw new Error(errData.error || '合併失敗');
             }
 
@@ -232,9 +265,9 @@ class MergeEditor {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'merged.pdf';
+            a.download = '合併結果.pdf';
             a.click();
-            URL.revokeObjectURL(url);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
 
             hideLoading();
             showToast('PDF 合併完成，已開始下載', 'success');

@@ -1,7 +1,15 @@
 /**
  * 文字編輯器模組
- * 處理文字選取、複製、刪除、新增文字
+ * 處理文字選取、複製、刪除、修改、新增文字
+ *
+ * 新增文字採「所見即所得」：輸入框用跟 PDF 相同的字型檔、字級與行高，
+ * 框的左上角就是文字寫進 PDF 的位置（後端 add_text 的 anchor="top"）。
  */
+
+// 與後端相同的字型度量（Noto Sans TC：上緣 1.16、下緣 0.288，單位為字級）
+const TEXT_ASCENT = 1.16;
+const TEXT_LINE_HEIGHT = 1.448;
+
 class TextEditor {
     constructor() {
         this.textOverlay = document.getElementById('text-overlay');
@@ -15,7 +23,8 @@ class TextEditor {
 
         // 文字輸入模式
         this.isTextInputMode = false;
-        this.textInputOverlay = null;
+        // 目前正在打、還沒放進 PDF 的文字框：{box, ta, pageNum, x, y}（x, y 為 PDF 座標）
+        this.pending = null;
 
         this._bindEvents();
     }
@@ -23,8 +32,11 @@ class TextEditor {
     _bindEvents() {
         // 選取框拖拽
         this.textOverlay.addEventListener('mousedown', (e) => this._onMouseDown(e));
-        this.textOverlay.addEventListener('mousemove', (e) => this._onMouseMove(e));
-        this.textOverlay.addEventListener('mouseup', (e) => this._onMouseUp(e));
+        document.addEventListener('mousemove', (e) => this._onMouseMove(e));
+        document.addEventListener('mouseup', (e) => this._onMouseUp(e));
+
+        // 打字模式：點頁面放文字
+        this.textOverlay.addEventListener('click', (e) => this._onTypingClick(e));
 
         // 右鍵選單
         this.textOverlay.addEventListener('contextmenu', (e) => {
@@ -33,6 +45,11 @@ class TextEditor {
                 this._showContextMenu(e.clientX, e.clientY);
             }
         });
+
+        // 字級、顏色改變時，正在打的字即時跟著變
+        document.getElementById('font-size-input').addEventListener('input', () => this._layoutPending());
+        document.getElementById('font-color-input').addEventListener('input', () => this._layoutPending());
+        document.getElementById('font-color-hex').addEventListener('change', () => this._layoutPending());
     }
 
     /**
@@ -41,12 +58,13 @@ class TextEditor {
     async loadTextBlocks(docId, pageNum) {
         try {
             const resp = await fetch(`/api/page/${docId}/${pageNum}/text`);
-            const data = await resp.json();
+            const data = await readJSON(resp);
             if (data.error) return;
 
             this.textItems = data.text_items || [];
             this.selectedSpans = [];
             this._renderTextOverlay();
+            this._updateSelectionUI();
         } catch (e) {
             console.error('Failed to load text blocks:', e);
         }
@@ -70,6 +88,7 @@ class TextEditor {
 
             const span = document.createElement('div');
             span.className = 'text-span-overlay';
+            if (this.selectedSpans.includes(index)) span.classList.add('selected');
             span.dataset.index = index;
             span.style.left = screenPos0.x + 'px';
             span.style.top = screenPos0.y + 'px';
@@ -90,7 +109,8 @@ class TextEditor {
                 }
             });
 
-            this.textOverlay.appendChild(span);
+            // 插在最前面，讓正在打字的輸入框永遠在上層
+            this.textOverlay.insertBefore(span, this.textOverlay.firstChild);
         });
     }
 
@@ -100,7 +120,7 @@ class TextEditor {
     enableSelectMode() {
         this.isTextInputMode = false;
         this.textOverlay.classList.add('selecting');
-        this._removeTextInputOverlay();
+        this.textOverlay.classList.remove('typing');
     }
 
     /**
@@ -108,187 +128,216 @@ class TextEditor {
      */
     enableTextInputMode() {
         this.isTextInputMode = true;
-        this.textOverlay.classList.add('selecting');
+        this.textOverlay.classList.add('selecting', 'typing');
         this._clearSelection();
-
-        // 監聽點擊事件來放置文字
-        this._textClickHandler = (e) => {
-            if (!this.isTextInputMode) return;
-            const rect = this.textOverlay.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            this._createTextInput(x, y);
-        };
-        this.textOverlay.addEventListener('click', this._textClickHandler);
     }
 
     /**
-     * 停用所有模式
+     * 停用所有模式（呼叫前應先 commitPending）
      */
     disable() {
         this.isTextInputMode = false;
-        this.textOverlay.classList.remove('selecting');
-        if (this._textClickHandler) {
-            this.textOverlay.removeEventListener('click', this._textClickHandler);
-            this._textClickHandler = null;
-        }
+        this.textOverlay.classList.remove('selecting', 'typing');
+        this.cancelPendingInput();
+    }
+
+    // ---- 新增文字 ----
+
+    async _onTypingClick(e) {
+        if (!this.isTextInputMode || !window.pdfViewer.docId) return;
+        if (this.pending && this.pending.box.contains(e.target)) return;
+
+        const viewer = window.pdfViewer;
+        const rect = this.textOverlay.getBoundingClientRect();
+        const pdf = viewer.screenToPDF(e.clientX - rect.left, e.clientY - rect.top);
+
+        // 已經打好的上一段先放進 PDF，再在新位置開一個框（連續填表格不用每次按確認）
+        const ok = await this.commitPending();
+        if (!ok) return;
+
+        // 讓點下去的位置落在第一行文字的垂直中央
+        const size = this._fontSize();
+        this._createTextInput(pdf.x, pdf.y - (size * TEXT_LINE_HEIGHT) / 2);
+    }
+
+    _fontSize() {
+        const v = parseFloat(document.getElementById('font-size-input').value);
+        return Math.max(4, Math.min(200, isNaN(v) ? 14 : v));
+    }
+
+    _fontColor() {
+        return document.getElementById('font-color-input').value || '#000000';
     }
 
     /**
-     * 建立文字輸入框
+     * 建立文字輸入框（x, y 為第一行文字框左上角的 PDF 座標）
      */
     _createTextInput(x, y) {
-        this._removeTextInputOverlay();
+        this.cancelPendingInput();
+        const viewer = window.pdfViewer;
 
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position: absolute;
-            left: ${x}px;
-            top: ${y}px;
-            min-width: 100px;
-            z-index: 30;
-        `;
+        const box = document.createElement('div');
+        box.className = 'text-input-box';
 
-        const textarea = document.createElement('textarea');
-        textarea.style.cssText = `
-            width: 200px;
-            min-height: 40px;
-            background: rgba(255,255,255,0.95);
-            border: 2px solid #6366f1;
-            border-radius: 4px;
-            padding: 6px 8px;
-            font-size: ${document.getElementById('font-size-input').value}px;
-            color: ${document.getElementById('font-color-input').value};
-            font-family: 'Noto Sans TC', 'Inter', sans-serif;
-            resize: both;
-            outline: none;
-        `;
-        textarea.placeholder = '輸入文字...';
+        const handle = document.createElement('div');
+        handle.className = 'text-input-handle';
+        handle.title = '按住拖曳可移動位置';
+        handle.textContent = '⠿';
 
-        overlay.appendChild(textarea);
-        this.textOverlay.appendChild(overlay);
-        this.textInputOverlay = overlay;
-        textarea.focus();
+        const ta = document.createElement('textarea');
+        ta.className = 'text-input-area';
+        ta.setAttribute('wrap', 'off');
+        ta.spellcheck = false;
+        ta.placeholder = '在這裡打字';
+
+        box.appendChild(handle);
+        box.appendChild(ta);
+        this.textOverlay.appendChild(box);
+
+        // 框內的點擊不要被當成「在頁面上點新位置」或「開始框選」
+        box.addEventListener('mousedown', (e) => e.stopPropagation());
+        box.addEventListener('click', (e) => e.stopPropagation());
+
+        ta.addEventListener('input', () => this._autosize());
+        ta.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                this.commitPending();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                this.cancelPendingInput();
+            }
+        });
+
+        // 拖曳把手移動位置
+        handle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const orig = { x: this.pending.x, y: this.pending.y };
+            const ratio = viewer.getScreenToPDFRatio();
+            const onMove = (e2) => {
+                if (!this.pending) return;
+                this.pending.x = orig.x + (e2.clientX - startX) * ratio.x;
+                this.pending.y = orig.y + (e2.clientY - startY) * ratio.y;
+                this._layoutPending();
+            };
+            const onUp = () => {
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                this.pending?.ta.focus();
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+
+        this.pending = { box, ta, pageNum: viewer.currentPage, x, y };
+        this._layoutPending();
+        ta.focus();
 
         // 顯示文字屬性面板
         document.getElementById('text-properties').style.display = 'block';
-
-        // 即時更新字型大小和顏色
-        const fontSizeInput = document.getElementById('font-size-input');
-        const fontColorInput = document.getElementById('font-color-input');
-
-        fontSizeInput.addEventListener('input', () => {
-            textarea.style.fontSize = fontSizeInput.value + 'px';
-        });
-        fontColorInput.addEventListener('input', () => {
-            textarea.style.color = fontColorInput.value;
-        });
-
-        // 記錄位置
-        this.textInputOverlay._posX = x;
-        this.textInputOverlay._posY = y;
     }
 
-    _removeTextInputOverlay() {
-        if (this.textInputOverlay) {
-            this.textInputOverlay.remove();
-            this.textInputOverlay = null;
+    /**
+     * 依 PDF 座標、字級與目前縮放，擺放輸入框並設定字體大小
+     */
+    _layoutPending() {
+        if (!this.pending) return;
+        const viewer = window.pdfViewer;
+        const { box, ta, x, y } = this.pending;
+
+        const pos = viewer.pdfToScreen(x, y);
+        const scale = 1 / viewer.getScreenToPDFRatio().x;
+        box.style.left = pos.x + 'px';
+        box.style.top = pos.y + 'px';
+        ta.style.fontSize = (this._fontSize() * scale) + 'px';
+        ta.style.color = this._fontColor();
+        this._autosize();
+    }
+
+    _autosize() {
+        if (!this.pending) return;
+        const ta = this.pending.ta;
+        ta.style.width = '0px';
+        ta.style.height = '0px';
+        const fontPx = parseFloat(ta.style.fontSize) || 14;
+        ta.style.width = Math.max(ta.scrollWidth + 2, fontPx * 5) + 'px';
+        ta.style.height = Math.max(ta.scrollHeight, fontPx * TEXT_LINE_HEIGHT) + 'px';
+    }
+
+    hasPendingInput() {
+        return !!this.pending;
+    }
+
+    cancelPendingInput() {
+        if (this.pending) {
+            this.pending.box.remove();
+            this.pending = null;
         }
     }
 
     /**
-     * 確認並提交文字到 PDF
+     * 把正在打的文字放進 PDF。回傳 true 表示可以繼續下一個動作。
      */
-    async confirmText() {
-        if (!this.textInputOverlay) {
-            showToast('請先在頁面上點擊以放置文字', 'info');
-            return;
-        }
+    async commitPending() {
+        if (!this.pending) return true;
+        const p = this.pending;
+        if (p.committing) return p.committing;
 
-        const textarea = this.textInputOverlay.querySelector('textarea');
-        const text = textarea.value.trim();
-        if (!text) {
-            showToast('請輸入文字內容', 'info');
-            return;
+        const text = p.ta.value.replace(/\s+$/, '');
+        if (!text.trim()) {
+            this.cancelPendingInput();
+            return true;
         }
 
         const viewer = window.pdfViewer;
-        const x = this.textInputOverlay._posX;
-        const y = this.textInputOverlay._posY;
-        const pdfPos = viewer.screenToPDF(x, y);
+        p.committing = (async () => {
+            try {
+                const resp = await fetch('/api/text/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        doc_id: viewer.docId,
+                        page_num: p.pageNum,
+                        x: p.x,
+                        y: p.y,
+                        text: text,
+                        font_size: this._fontSize(),
+                        color: this._hexToRGB(this._fontColor()),
+                    }),
+                });
+                const data = await readJSON(resp);
+                if (data.error) throw new Error(data.error);
 
-        const fontSize = parseFloat(document.getElementById('font-size-input').value);
-        const colorHex = document.getElementById('font-color-input').value;
-        const color = this._hexToRGB(colorHex);
+                // 等新頁面畫好再拿掉輸入框，畫面不會閃一下
+                await viewer.reloadAfterEdit(data);
+                if (this.pending === p) this.cancelPendingInput();
+                return true;
+            } catch (e) {
+                p.committing = null;
+                showToast(`加入文字失敗: ${e.message}`, 'error');
+                return false;
+            }
+        })();
+        return p.committing;
+    }
 
-        showLoading('正在加入文字...');
-        try {
-            const resp = await fetch('/api/text/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    doc_id: viewer.docId,
-                    page_num: viewer.currentPage,
-                    x: pdfPos.x,
-                    y: pdfPos.y + fontSize, // 基線調整
-                    text: text,
-                    font_size: fontSize,
-                    color: color,
-                }),
-            });
-            const data = await resp.json();
-            if (data.error) throw new Error(data.error);
-
-            // 記錄 undo
-            const undoData = {
-                docId: viewer.docId,
-                pageNum: viewer.currentPage,
-                rect: [pdfPos.x - 1, pdfPos.y - 1, pdfPos.x + 300, pdfPos.y + fontSize + 5],
-            };
-            window.undoManager.push({
-                type: 'add_text',
-                data: undoData,
-                undo: async () => {
-                    await fetch('/api/text/delete', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            doc_id: undoData.docId,
-                            page_num: undoData.pageNum,
-                            rect: undoData.rect,
-                        }),
-                    });
-                    await viewer.refreshCurrentPage();
-                },
-                redo: async () => {
-                    await fetch('/api/text/add', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            doc_id: undoData.docId,
-                            page_num: undoData.pageNum,
-                            x: pdfPos.x,
-                            y: pdfPos.y + fontSize,
-                            text: text,
-                            font_size: fontSize,
-                            color: color,
-                        }),
-                    });
-                    await viewer.refreshCurrentPage();
-                },
-            });
-
-            this._removeTextInputOverlay();
-            await viewer.refreshCurrentPage();
-            await this.loadTextBlocks(viewer.docId, viewer.currentPage);
-            await viewer.refreshThumbnails();
-
-            hideLoading();
-            showToast('文字已加入', 'success');
-        } catch (e) {
-            hideLoading();
-            showToast(`加入失敗: ${e.message}`, 'error');
+    /**
+     * 「確認加入文字」按鈕
+     */
+    async confirmText() {
+        if (!this.pending) {
+            showToast('請先在頁面上點一下要放文字的位置', 'info');
+            return;
         }
+        if (!this.pending.ta.value.trim()) {
+            showToast('請輸入文字內容', 'info');
+            this.pending.ta.focus();
+            return;
+        }
+        if (await this.commitPending()) showToast('文字已加入', 'success');
     }
 
     // ---- Selection handling ----
@@ -303,7 +352,8 @@ class TextEditor {
             y: e.clientY - rect.top,
         };
         this.isSelecting = true;
-        this._clearSelection();
+        // 按住 Ctrl 是「加選」，不要清掉原本選的
+        if (!(e.ctrlKey || e.metaKey)) this._clearSelection();
 
         this.selectionRect.style.display = 'block';
         this.selectionRect.style.left = this.selectionStart.x + 'px';
@@ -347,7 +397,8 @@ class TextEditor {
 
         // 找出在選取框內的文字
         const spans = this.textOverlay.querySelectorAll('.text-span-overlay');
-        spans.forEach((span, index) => {
+        spans.forEach((span) => {
+            const index = parseInt(span.dataset.index);
             const spanRect = {
                 left: parseFloat(span.style.left),
                 top: parseFloat(span.style.top),
@@ -395,81 +446,101 @@ class TextEditor {
         this._updateSelectionUI();
     }
 
+    selectAll() {
+        this.textOverlay.querySelectorAll('.text-span-overlay').forEach(span => {
+            span.classList.add('selected');
+            const index = parseInt(span.dataset.index);
+            if (!this.selectedSpans.includes(index)) this.selectedSpans.push(index);
+        });
+        this._updateSelectionUI();
+    }
+
+    /**
+     * 選取的文字依閱讀順序排好：同一行直接相接，換行處放換行
+     */
+    _selectedItemsInOrder() {
+        const items = this.selectedSpans.map(i => this.textItems[i]).filter(Boolean);
+        items.sort((a, b) => {
+            const sameLine = Math.abs(a.origin[1] - b.origin[1]) < Math.min(a.size, b.size) * 0.5;
+            return sameLine ? a.bbox[0] - b.bbox[0] : a.origin[1] - b.origin[1];
+        });
+        return items;
+    }
+
+    _selectedText() {
+        const items = this._selectedItemsInOrder();
+        let text = '';
+        items.forEach((item, i) => {
+            if (i > 0) {
+                const prev = items[i - 1];
+                const sameLine = Math.abs(item.origin[1] - prev.origin[1]) < Math.min(item.size, prev.size) * 0.5;
+                text += sameLine ? '' : '\n';
+            }
+            text += item.text;
+        });
+        return text.split('\n').map(l => l.trim()).join('\n');
+    }
+
     _updateSelectionUI() {
         const infoPanel = document.getElementById('selection-info');
-        if (this.selectedSpans.length > 0) {
+        if (this.selectedSpans.length > 0 && !this.isTextInputMode) {
             infoPanel.style.display = 'block';
-            const text = this.selectedSpans.map(i => this.textItems[i]?.text || '').join(' ');
+            const text = this._selectedText();
             this.selectedTextPreview.value = text;
+            this._originalSelectedText = text;
+            // PDF 內部編碼特殊時，擷取出來的字會是亂碼
+            document.getElementById('selection-garbled-hint').style.display =
+                /[�-]/.test(text) ? 'block' : 'none';
         } else {
             infoPanel.style.display = 'none';
         }
     }
 
     /**
-     * 修改選取的文字（先刪除舊文字，再插入新文字）
+     * 修改選取的文字：一次請求完成「刪掉原文字＋在原位置寫入新文字」
      */
     async updateSelectedText() {
         if (this.selectedSpans.length === 0) return;
 
-        const newText = this.selectedTextPreview.value.trim();
-        if (!newText) {
+        const newText = this.selectedTextPreview.value.replace(/\s+$/, '');
+        if (!newText.trim()) {
             showToast('若要清空內容，請直接使用「刪除」按鈕', 'info');
+            return;
+        }
+        if (newText === this._originalSelectedText) {
+            showToast('文字沒有變更', 'info');
             return;
         }
 
         const viewer = window.pdfViewer;
+        const items = this._selectedItemsInOrder();
+        const first = items[0];
+
         showLoading('修改文字中...');
-
         try {
-            // 取得第一個選取文字區塊的座標與字型大小作為基準
-            const firstIdx = this.selectedSpans[0];
-            const firstItem = this.textItems[firstIdx];
-
-            const x = firstItem ? firstItem.bbox[0] : 72;
-            const y = firstItem ? firstItem.bbox[1] : 72;
-            const fontSize = firstItem ? (firstItem.size || 12) : 12;
-
-            // 1. 刪除原本選取的文字區塊
-            for (const idx of this.selectedSpans) {
-                const item = this.textItems[idx];
-                if (!item) continue;
-                await fetch('/api/text/delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        doc_id: viewer.docId,
-                        page_num: viewer.currentPage,
-                        rect: item.bbox,
-                    }),
-                });
-            }
-
-            // 2. 在第一項位置寫入新文字
-            const fontColorHex = document.getElementById('font-color-input')?.value || '#000000';
-            const color = this._hexToRGB(fontColorHex);
-
-            await fetch('/api/text/add', {
+            const resp = await fetch('/api/text/replace', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     doc_id: viewer.docId,
                     page_num: viewer.currentPage,
-                    x: x,
-                    y: y + fontSize * 0.8, // 調整基線位置
+                    rects: items.map(item => item.bbox),
+                    // 沿用原文字的位置、字級與顏色
+                    x: first.bbox[0],
+                    baseline: first.origin[1],
                     text: newText,
-                    font_size: fontSize,
-                    color: color,
+                    font_size: first.size || 12,
+                    color: first.color || 0,
                 }),
             });
+            const data = await readJSON(resp);
+            if (data.error) throw new Error(data.error);
 
             this._clearSelection();
-            await viewer.refreshCurrentPage();
-            await this.loadTextBlocks(viewer.docId, viewer.currentPage);
-            await viewer.refreshThumbnails();
+            await viewer.reloadAfterEdit(data);
 
             hideLoading();
-            showToast('文字修改成功！', 'success');
+            showToast('文字修改成功', 'success');
         } catch (e) {
             hideLoading();
             showToast(`修改失敗: ${e.message}`, 'error');
@@ -480,7 +551,7 @@ class TextEditor {
      * 複製選取的文字到剪貼簿
      */
     async copySelectedText() {
-        const text = this.selectedTextPreview.value || this.selectedSpans.map(i => this.textItems[i]?.text || '').join(' ');
+        const text = this.selectedTextPreview.value || this._selectedText();
         if (!text) return;
 
         try {
@@ -499,45 +570,30 @@ class TextEditor {
     }
 
     /**
-     * 刪除選取的文字
+     * 刪除選取的文字（多段一次刪，算一步上一步）
      */
     async deleteSelectedText() {
         if (this.selectedSpans.length === 0) return;
 
         const viewer = window.pdfViewer;
+        const rects = this.selectedSpans.map(i => this.textItems[i]?.bbox).filter(Boolean);
         showLoading('刪除文字中...');
 
         try {
-            // 計算包含所有選中文字的最小矩形
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (const idx of this.selectedSpans) {
-                const item = this.textItems[idx];
-                if (!item) continue;
-                minX = Math.min(minX, item.bbox[0]);
-                minY = Math.min(minY, item.bbox[1]);
-                maxX = Math.max(maxX, item.bbox[2]);
-                maxY = Math.max(maxY, item.bbox[3]);
-            }
-
-            // 逐個選取項目刪除（更精確）
-            for (const idx of this.selectedSpans) {
-                const item = this.textItems[idx];
-                if (!item) continue;
-                await fetch('/api/text/delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        doc_id: viewer.docId,
-                        page_num: viewer.currentPage,
-                        rect: item.bbox,
-                    }),
-                });
-            }
+            const resp = await fetch('/api/text/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    doc_id: viewer.docId,
+                    page_num: viewer.currentPage,
+                    rects: rects,
+                }),
+            });
+            const data = await readJSON(resp);
+            if (data.error) throw new Error(data.error);
 
             this._clearSelection();
-            await viewer.refreshCurrentPage();
-            await this.loadTextBlocks(viewer.docId, viewer.currentPage);
-            await viewer.refreshThumbnails();
+            await viewer.reloadAfterEdit(data);
 
             hideLoading();
             showToast('文字已刪除', 'success');
@@ -552,12 +608,6 @@ class TextEditor {
         menu.style.left = x + 'px';
         menu.style.top = y + 'px';
         menu.classList.add('visible');
-
-        const closeMenu = () => {
-            menu.classList.remove('visible');
-            document.removeEventListener('click', closeMenu);
-        };
-        setTimeout(() => document.addEventListener('click', closeMenu), 10);
     }
 
     _hexToRGB(hex) {
@@ -570,10 +620,11 @@ class TextEditor {
     }
 
     /**
-     * 頁面尺寸變更時更新覆蓋層
+     * 頁面尺寸或縮放變更時更新覆蓋層
      */
     updateOverlaySize() {
         this._renderTextOverlay();
+        this._layoutPending();
     }
 }
 

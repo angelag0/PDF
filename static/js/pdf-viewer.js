@@ -21,54 +21,112 @@ class PDFViewer {
         // Callbacks
         this.onPageChange = null;
         this.onDocLoaded = null;
+        // 換頁前呼叫（例如把還在打字的內容先放進 PDF）；回傳 false 則不換頁
+        this.beforePageChange = null;
+        this._pendingResolve = null;
+        // 內容版本：每次修改 +1，讓各模組知道要重新抓文字位置
+        this.contentVersion = 0;
     }
 
     /**
      * 上傳並載入 PDF
      */
     async loadPDF(file) {
-        const formData = new FormData();
-        formData.append('file', file);
-
         showLoading('正在載入 PDF...');
         try {
-            const resp = await fetch('/api/upload', { method: 'POST', body: formData });
-            const data = await resp.json();
-            if (data.error) throw new Error(data.error);
+            const data = await uploadPDF(file);
+
+            // 新檔的資訊先拿到，確定開得起來再換掉舊檔
+            const infoResp = await fetch(`/api/doc/${data.doc_id}/info`);
+            const pageInfo = await readJSON(infoResp);
+            if (pageInfo.error) throw new Error(pageInfo.error);
+
+            // 換檔：釋放舊檔（合併清單還用得到的就留著），清掉上一個檔的編輯狀態
+            const oldDocId = this.docId;
+            if (oldDocId && !window.mergeEditor.usesDoc(oldDocId)) {
+                await fetch(`/api/close/${oldDocId}`, { method: 'POST' }).catch(() => {});
+            }
+            window.textEditor.cancelPendingInput();
+            window.imageEditor.clearAll();
+            window.cropEditor.reset();
+            window.undoManager.clear();
 
             this.docId = data.doc_id;
+            this.filename = data.filename;
+            this.locked = !!data.locked;
+            this.contentVersion++;
             this.pageCount = data.page_count;
             this.currentPage = 0;
-
-            // 取得文件資訊
-            const infoResp = await fetch(`/api/doc/${this.docId}/info`);
-            this.pageInfo = await infoResp.json();
+            this.pageInfo = pageInfo;
 
             // 顯示編輯區域
             this.uploadScreen.classList.add('hidden');
             this.canvasContainer.classList.remove('hidden');
 
             // 更新 UI 資訊
+            const label = data.filename + (data.locked ? '（有密碼）' : '');
             document.getElementById('info-filename').textContent = data.filename;
-            document.getElementById('status-doc').innerHTML = `<span>📄 ${data.filename}</span>`;
+            const status = document.getElementById('status-doc');
+            status.innerHTML = '';
+            const statusSpan = document.createElement('span');
+            statusSpan.textContent = label;
+            status.appendChild(statusSpan);
 
             // 載入縮圖
             await this.loadThumbnails();
 
-            // 渲染第一頁
+            // 渲染第一頁，並縮放到適合視窗寬度（最大 150%）
             await this.renderPage(0);
+            this.zoomFit(1.5);
 
             hideLoading();
             showToast(`成功載入「${data.filename}」（共 ${data.page_count} 頁）`, 'success');
+            if (data.locked) {
+                showToast('這份檔案有密碼：匯出 PDF 時可以選擇要不要保留密碼', 'info');
+            }
 
             if (this.onDocLoaded) {
                 this.onDocLoaded(this.docId, this.pageCount);
             }
         } catch (e) {
             hideLoading();
-            showToast(`載入失敗: ${e.message}`, 'error');
-            throw e;
+            showToast(e.cancelled ? e.message : `開啟失敗：${e.message}`, e.cancelled ? 'info' : 'error');
         }
+    }
+
+    /**
+     * 換頁（使用者操作的入口）：先讓各編輯器收尾，再渲染
+     */
+    async goToPage(pageNum) {
+        if (!this.docId || pageNum < 0 || pageNum >= this.pageCount || pageNum === this.currentPage) return;
+        if (this.beforePageChange) {
+            const proceed = await this.beforePageChange(pageNum);
+            if (proceed === false) return;
+        }
+        await this.renderPage(pageNum);
+    }
+
+    /**
+     * 任何修改（含上一步／下一步）之後：同步頁數、頁面尺寸、縮圖與按鈕狀態
+     */
+    async reloadAfterEdit(data) {
+        window.undoManager.sync(data);
+        this.contentVersion++;
+        const countChanged = data.page_count !== undefined && data.page_count !== this.pageCount;
+        if (data.page_count !== undefined) this.pageCount = data.page_count;
+
+        const infoResp = await fetch(`/api/doc/${this.docId}/info`);
+        const pageInfo = await readJSON(infoResp);
+        if (pageInfo.error) throw new Error(pageInfo.error);
+        this.pageInfo = pageInfo;
+
+        if (this.currentPage >= this.pageCount) this.currentPage = this.pageCount - 1;
+        if (countChanged) {
+            await this.loadThumbnails();
+        } else {
+            this.refreshThumbnails();
+        }
+        await this.renderPage(this.currentPage);
     }
 
     /**
@@ -80,8 +138,16 @@ class PDFViewer {
         this.currentPage = pageNum;
         const url = `/api/page/${this.docId}/${pageNum}?zoom=${this.renderZoom}&t=${Date.now()}`;
 
+        // 連續快速換頁時，先前還沒載完的那次直接結束，避免有人一直等不到
+        if (this._pendingResolve) {
+            this._pendingResolve();
+            this._pendingResolve = null;
+        }
+
         return new Promise((resolve, reject) => {
+            this._pendingResolve = resolve;
             this.pageImg.onload = () => {
+                this._pendingResolve = null;
                 // 根據顯示縮放調整大小
                 const displayWidth = this.pageImg.naturalWidth * (this.zoom / this.renderZoom);
                 const displayHeight = this.pageImg.naturalHeight * (this.zoom / this.renderZoom);
@@ -106,7 +172,11 @@ class PDFViewer {
                 }
                 resolve();
             };
-            this.pageImg.onerror = () => reject(new Error('頁面載入失敗'));
+            this.pageImg.onerror = () => {
+                this._pendingResolve = null;
+                showToast('頁面載入失敗，程式可能已重新啟動，請重新開啟檔案', 'error');
+                reject(new Error('頁面載入失敗'));
+            };
             this.pageImg.src = url;
         });
     }
@@ -142,7 +212,7 @@ class PDFViewer {
             item.appendChild(label);
 
             item.addEventListener('click', () => {
-                this.renderPage(i);
+                this.goToPage(i);
             });
 
             this.thumbnailList.appendChild(item);
@@ -175,6 +245,14 @@ class PDFViewer {
         this.zoom = Math.max(0.25, Math.min(5.0, zoom));
         document.getElementById('zoom-value').textContent = Math.round(this.zoom * 100) + '%';
 
+        // 放大時提高渲染解析度，避免字變糊
+        const needed = Math.min(5, Math.max(2, Math.ceil(this.zoom * (window.devicePixelRatio || 1))));
+        if (this.docId && needed !== this.renderZoom) {
+            this.renderZoom = needed;
+            this.renderPage(this.currentPage);
+            return;
+        }
+
         if (this.docId) {
             const displayWidth = this.pageImg.naturalWidth * (this.zoom / this.renderZoom);
             const displayHeight = this.pageImg.naturalHeight * (this.zoom / this.renderZoom);
@@ -197,11 +275,12 @@ class PDFViewer {
         this.setZoom(this.zoom - 0.1);
     }
 
-    zoomFit() {
+    zoomFit(maxZoom = 5.0) {
         if (!this.docId) return;
+        const info = this.pageInfo?.pages?.[this.currentPage];
+        if (!info) return;
         const containerWidth = this.canvasContainer.clientWidth - 48;
-        const imgNaturalWidth = this.pageImg.naturalWidth / this.renderZoom;
-        this.setZoom(containerWidth / imgNaturalWidth);
+        this.setZoom(Math.min(maxZoom, containerWidth / info.width));
     }
 
     /**
@@ -209,7 +288,7 @@ class PDFViewer {
      */
     prevPage() {
         if (this.currentPage > 0) {
-            this.renderPage(this.currentPage - 1);
+            this.goToPage(this.currentPage - 1);
         }
     }
 
@@ -218,7 +297,7 @@ class PDFViewer {
      */
     nextPage() {
         if (this.currentPage < this.pageCount - 1) {
-            this.renderPage(this.currentPage + 1);
+            this.goToPage(this.currentPage + 1);
         }
     }
 
@@ -280,25 +359,13 @@ class PDFViewer {
                     pages: [pageToDelete],
                 }),
             });
-            const data = await resp.json();
+            const data = await readJSON(resp);
             if (data.error) throw new Error(data.error);
 
-            this.pageCount = data.page_count;
-
-            // 更新頁面資訊
-            const infoResp = await fetch(`/api/doc/${this.docId}/info`);
-            this.pageInfo = await infoResp.json();
-
-            // 調整當前頁碼
-            if (this.currentPage >= this.pageCount) {
-                this.currentPage = this.pageCount - 1;
-            }
-
-            await this.loadThumbnails();
-            await this.renderPage(this.currentPage);
+            await this.reloadAfterEdit(data);
 
             hideLoading();
-            showToast(`已刪除第 ${pageToDelete + 1} 頁`, 'success');
+            showToast(`已刪除第 ${pageToDelete + 1} 頁（可按「上一步」救回）`, 'success');
         } catch (e) {
             hideLoading();
             showToast(`刪除失敗: ${e.message}`, 'error');
